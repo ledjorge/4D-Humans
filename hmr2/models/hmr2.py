@@ -132,6 +132,8 @@ class HMR2(pl.LightningModule):
         output['pred_vertices'] = pred_vertices.reshape(batch_size, -1, 3)
         pred_cam_t = pred_cam_t.reshape(-1, 3)
         focal_length = focal_length.reshape(-1, 2)
+        #TODO Jorge: Crashing below
+        #/AppleInternal/Library/BuildRoots/ce725a5f-c761-11ee-a4ec-b6ef2fd8d87b/Library/Caches/com.apple.xbs/Sources/MetalPerformanceShaders/MPSCore/Types/MPSNDArray.mm:124: failed assertion `[MPSNDArrayDescriptor sliceDimension:withSubrange:] error: subRange.start (88) is not less than length of dimension[0] (3)'
         pred_keypoints_2d = perspective_projection(pred_keypoints_3d,
                                                    translation=pred_cam_t,
                                                    focal_length=focal_length / self.cfg.MODEL.IMAGE_SIZE)
