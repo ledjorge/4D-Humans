@@ -29,8 +29,8 @@ class ViTDetDataset(torch.utils.data.Dataset):
         assert train == False, "ViTDetDataset is only for inference"
         self.train = train
         self.img_size = cfg.MODEL.IMAGE_SIZE
-        self.mean = 255. * np.array(self.cfg.MODEL.IMAGE_MEAN)
-        self.std = 255. * np.array(self.cfg.MODEL.IMAGE_STD)
+        self.mean = 255. * np.array(self.cfg.MODEL.IMAGE_MEAN).astype(np.float32)
+        self.std = 255. * np.array(self.cfg.MODEL.IMAGE_STD).astype(np.float32)
 
         # Preprocess annotations
         boxes = boxes.astype(np.float32)
