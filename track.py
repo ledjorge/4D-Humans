@@ -145,6 +145,7 @@ class HMR2023TextureSampler(HMR2Predictor):
 class HMR2_4dhuman(PHALP):
     def __init__(self, cfg):
         super().__init__(cfg)
+        print('HMR2_4dhuman(PHALP): PHALP initialised')
 
     def setup_hmr(self):
         self.HMAR = HMR2023TextureSampler(self.cfg)
