@@ -183,4 +183,6 @@ def main(cfg: DictConfig) -> Optional[float]:
     phalp_tracker.track()
 
 if __name__ == "__main__":
+    print('track.py main()')
     main()
+    print('track.py main() done')
