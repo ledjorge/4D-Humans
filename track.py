@@ -145,7 +145,7 @@ class HMR2023TextureSampler(HMR2Predictor):
 class HMR2_4dhuman(PHALP):
     def __init__(self, cfg):
         super().__init__(cfg)
-        print('HMR2_4dhuman(PHALP): PHALP initialised')
+        log.info('HMR2_4dhuman(PHALP): PHALP initialised')
 
     def setup_hmr(self):
         self.HMAR = HMR2023TextureSampler(self.cfg)
@@ -183,6 +183,6 @@ def main(cfg: DictConfig) -> Optional[float]:
     phalp_tracker.track()
 
 if __name__ == "__main__":
-    print('track.py main()')
+    log.info('track.py main()')
     main()
-    print('track.py main() done')
+    log.info('track.py main() done')
