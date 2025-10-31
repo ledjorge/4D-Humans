@@ -1,6 +1,11 @@
 import os
+import sys
+
+# Use EGL by default on Linux where the library is typically available; let
+# other platforms (e.g. macOS) fall back to pyglet's windowed context.
 if 'PYOPENGL_PLATFORM' not in os.environ:
-    os.environ['PYOPENGL_PLATFORM'] = 'egl'
+    if sys.platform.startswith('linux'):
+        os.environ['PYOPENGL_PLATFORM'] = 'egl'
 import torch
 import numpy as np
 import pyrender

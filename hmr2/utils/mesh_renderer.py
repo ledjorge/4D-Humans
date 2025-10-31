@@ -1,6 +1,10 @@
 import os
+import sys
+
+# Default to EGL on Linux, but allow macOS/others to use the pyglet fallback.
 if 'PYOPENGL_PLATFORM' not in os.environ:
-    os.environ['PYOPENGL_PLATFORM'] = 'egl'
+    if sys.platform.startswith('linux'):
+        os.environ['PYOPENGL_PLATFORM'] = 'egl'
 import torch
 from torchvision.utils import make_grid
 import numpy as np
