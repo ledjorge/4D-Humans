@@ -34,7 +34,7 @@ def main():
     model, model_cfg = load_hmr2(args.checkpoint)
 
     # Setup HMR2.0 model
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
     model = model.to(device)
     model.eval()
 

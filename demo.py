@@ -35,6 +35,7 @@ def main():
 
     # Setup HMR2.0 model
     device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
+    print('Using {}'.format(device))
     model = model.to(device)
     model.eval()
 
