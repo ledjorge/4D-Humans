@@ -67,7 +67,7 @@ class DefaultPredictor_Lazy:
             self.aug = mapper.augmentations
             self.input_format = mapper.image_format
 
-        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
         self.model.eval().to(self.device)
         if test_dataset:
             self.metadata = MetadataCatalog.get(test_dataset)
