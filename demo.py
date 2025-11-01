@@ -4,6 +4,7 @@ import argparse
 import os
 import cv2
 import numpy as np
+from typing import Iterator, Optional, Tuple
 
 from hmr2.configs import CACHE_DIR_4DHUMANS
 from hmr2.models import HMR2, download_models, load_hmr2, DEFAULT_CHECKPOINT
@@ -12,6 +13,41 @@ from hmr2.datasets.vitdet_dataset import ViTDetDataset, DEFAULT_MEAN, DEFAULT_ST
 from hmr2.utils.renderer import Renderer, cam_crop_to_full
 
 LIGHT_BLUE=(0.65098039,  0.74117647,  0.85882353)
+SUPPORTED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp'}
+SUPPORTED_VIDEO_EXTENSIONS = {'.mp4', '.mov'}
+
+
+def iter_input_media(img_folder: Path, video_path: Optional[Path]) -> Iterator[Tuple[str, np.ndarray]]:
+    """
+    Yield (name, image) pairs from either a directory of still images or frames of a video file.
+    """
+    if video_path is not None:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise ValueError(f"Unable to open video file: {video_path}")
+        frame_idx = 0
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                yield f"{video_path.stem}_{frame_idx:06d}", frame
+                frame_idx += 1
+        finally:
+            cap.release()
+        return
+
+    image_paths = sorted(
+        [p for p in img_folder.iterdir() if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
+    )
+    if not image_paths:
+        print(f'No images found in {img_folder} with extensions {sorted(SUPPORTED_IMAGE_EXTENSIONS)}')
+    for path in image_paths:
+        img = cv2.imread(str(path))
+        if img is None:
+            print(f'Warning: unable to read image at {path}')
+            continue
+        yield path.stem, img
 
 def main():
     import time
@@ -26,8 +62,20 @@ def main():
     parser.add_argument('--save_mesh', dest='save_mesh', action='store_true', default=False, help='If set, save meshes to disk also')
     parser.add_argument('--detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference/fitting')
+    parser.add_argument('--video_path', type=str, default=None, help='Optional path to a video file (.mp4 or .mov) to process instead of a folder of images')
 
     args = parser.parse_args()
+
+    img_folder = Path(args.img_folder).expanduser()
+    video_path: Optional[Path] = None
+    if args.video_path is not None:
+        video_path = Path(args.video_path).expanduser()
+        if not video_path.exists():
+            raise FileNotFoundError(f'Video file not found: {video_path}')
+        if video_path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+            raise ValueError(f'Unsupported video extension: {video_path.suffix}. Supported: {sorted(SUPPORTED_VIDEO_EXTENSIONS)}')
+    elif not img_folder.exists():
+        raise FileNotFoundError(f'Image folder not found: {img_folder}')
 
     # Download and load checkpoints
     download_models(CACHE_DIR_4DHUMANS)
@@ -65,8 +113,9 @@ def main():
     os.makedirs(args.out_folder, exist_ok=True)
 
     # Iterate over all images in folder
-    for img_path in Path(args.img_folder).glob('*.png'):
-        img_cv2 = cv2.imread(str(img_path))
+    for img_fn, img_cv2 in iter_input_media(img_folder, video_path):
+        if img_cv2 is None:
+            continue
 
         # Detect humans in image
         det_out = detector(img_cv2)
@@ -74,10 +123,12 @@ def main():
         det_instances = det_out['instances']
         valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > 0.5)
         boxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+        if boxes.shape[0] == 0:
+            continue
 
         # Run HMR2.0 on all detected humans
         dataset = ViTDetDataset(model_cfg, img_cv2, boxes)
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=False, num_workers=0)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
         all_verts = []
         all_cam_t = []
@@ -98,7 +149,6 @@ def main():
             batch_size = batch['img'].shape[0]
             for n in range(batch_size):
                 # Get filename from path img_path
-                img_fn, _ = os.path.splitext(os.path.basename(img_path))
                 person_id = int(batch['personid'][n])
                 white_img = (torch.ones_like(batch['img'][n]).cpu() - DEFAULT_MEAN[:,None,None]/255) / (DEFAULT_STD[:,None,None]/255)
                 input_patch = batch['img'][n].cpu() * (DEFAULT_STD[:,None,None]/255) + (DEFAULT_MEAN[:,None,None]/255)
