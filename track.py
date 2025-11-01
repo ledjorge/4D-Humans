@@ -6,9 +6,12 @@ from typing import Optional, Tuple
 import os
 import hydra
 import torch
+import torch.nn as nn
 import numpy as np
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
+
+from hmr2.utils import recursive_to
 
 from phalp.configs.base import FullConfig
 from phalp.models.hmar.hmr import HMR2018Predictor
@@ -22,6 +25,48 @@ warnings.filterwarnings('ignore')
 
 log = get_pylogger(__name__)
 
+def _resolve_runtime_device(preferred: Optional[str] = None) -> torch.device:
+    """Select the best available device and patch `.cuda()` calls to map to it when needed."""
+    candidate_order = []
+    if preferred is not None:
+        candidate_order.append(preferred)
+    candidate_order.extend(["cuda", "mps", "cpu"])
+
+    target_device = None
+    for candidate in candidate_order:
+        if candidate == "cuda" and torch.cuda.is_available():
+            target_device = torch.device("cuda")
+            break
+        if candidate == "mps" and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            target_device = torch.device("mps")
+            break
+        if candidate == "cpu":
+            target_device = torch.device("cpu")
+            break
+
+    if target_device is None:
+        raise RuntimeError("Unable to select a runtime device. Please check your PyTorch installation.")
+
+    if target_device.type != "cuda":
+        # Remap .cuda() calls so the upstream PHALP code runs on the selected backend.
+        def _tensor_cuda(self, device=None, non_blocking=False, memory_format=torch.preserve_format):
+            return torch.Tensor.to(
+                self,
+                target_device if device is None else torch.device(target_device),
+                non_blocking=non_blocking,
+                memory_format=memory_format,
+            )
+
+        def _module_cuda(self, device=None):
+            return nn.Module.to(self, target_device if device is None else torch.device(target_device))
+
+        setattr(torch.Tensor, "cuda", _tensor_cuda)
+        setattr(nn.Module, "cuda", _module_cuda)
+
+    return target_device
+
+RUNTIME_DEVICE = _resolve_runtime_device()
+
 class HMR2Predictor(HMR2018Predictor):
     def __init__(self, cfg) -> None:
         super().__init__(cfg)
@@ -32,7 +77,7 @@ class HMR2Predictor(HMR2018Predictor):
         download_models()
         model, _ = load_hmr2()
 
-        self.model = model
+        self.model = model.to(RUNTIME_DEVICE)
         self.model.eval()
 
     def forward(self, x):
@@ -41,6 +86,7 @@ class HMR2Predictor(HMR2018Predictor):
             'img': x[:,:3,:,:],
             'mask': (x[:,3,:,:]).clip(0,1),
         }
+        batch = recursive_to(batch, RUNTIME_DEVICE)
         model_out = self.model(batch)
         out = hmar_out | {
             'pose_smpl': model_out['pred_smpl_params'],
@@ -68,12 +114,16 @@ class HMR2023TextureSampler(HMR2Predictor):
                                           light_intensity_ambient=1,
                                           light_intensity_directional=0,
                                           anti_aliasing=False)
+        # neural_renderer does not currently support MPS, keep it on CPU and move data as needed.
+        self._renderer_device = torch.device("cpu")
+        self.neural_renderer = self.neural_renderer.to(self._renderer_device)
 
     def forward(self, x):
         batch = {
             'img': x[:,:3,:,:],
             'mask': (x[:,3,:,:]).clip(0,1),
         }
+        batch = recursive_to(batch, RUNTIME_DEVICE)
         model_out = self.model(batch)
 
         # from hmr2.models.prohmr_texture import unproject_uvmap_to_mesh
@@ -114,11 +164,14 @@ class HMR2023TextureSampler(HMR2Predictor):
         K = K.unsqueeze(0)
         R = torch.eye(3, device=device).unsqueeze(0)
         t = torch.zeros(3, device=device).unsqueeze(0)
-        rend_depth = self.neural_renderer(pred_verts,
-                                        face_tensor[None].expand(pred_verts.shape[0], -1, -1).int(),
-                                        # textures=texture_atlas_rgb,
-                                        mode='depth',
-                                        K=K, R=R, t=t)
+        rend_depth = self.neural_renderer(
+            pred_verts.to(self._renderer_device),
+            face_tensor[None].expand(pred_verts.shape[0], -1, -1).to(self._renderer_device).int(),
+            mode='depth',
+            K=K.to(self._renderer_device),
+            R=R.to(self._renderer_device),
+            t=t.to(self._renderer_device),
+        ).to(device)
 
         rend_depth_at_proj = torch.nn.functional.grid_sample(rend_depth[:,None,:,:], map_verts_proj[:,None,:,:]) # B,1,1,N
         rend_depth_at_proj = rend_depth_at_proj.squeeze(1).squeeze(1) # B,N
@@ -148,6 +201,7 @@ class HMR2_4dhuman(PHALP):
 
     def setup_hmr(self):
         self.HMAR = HMR2023TextureSampler(self.cfg)
+        self.HMAR.to(RUNTIME_DEVICE)
 
     def get_detections(self, image, frame_name, t_, additional_data=None, measurments=None):
         (
@@ -163,6 +217,29 @@ class HMR2_4dhuman(PHALP):
             ground_truth_track_id, ground_truth_annotations
         )
     
+    def get_uv_distance(self, t_uv, d_uv):
+        t_uv_tensor = torch.from_numpy(t_uv).to(RUNTIME_DEVICE).float()
+        d_uv_tensor = torch.from_numpy(d_uv).to(RUNTIME_DEVICE).float()
+        d_mask = d_uv_tensor[3:, :, :] > 0.5
+        t_mask = t_uv_tensor[3:, :, :] > 0.5
+
+        mask_dt = torch.logical_and(d_mask, t_mask)
+        mask_dt = mask_dt.repeat(4, 1, 1)
+        mask_ = torch.logical_not(mask_dt)
+
+        t_uv_tensor[mask_] = 0.0
+        d_uv_tensor[mask_] = 0.0
+
+        with torch.no_grad():
+            t_emb = self.HMAR.autoencoder_hmar(t_uv_tensor.unsqueeze(0), en=True)
+            d_emb = self.HMAR.autoencoder_hmar(d_uv_tensor.unsqueeze(0), en=True)
+        t_emb = t_emb.view(-1) / 10**3
+        d_emb = d_emb.view(-1) / 10**3
+        return (
+            t_emb.cpu().numpy(),
+            d_emb.cpu().numpy(),
+            torch.sum(mask_dt).cpu().numpy() / 4 / 256 / 256 / 2,
+        )
 
 @dataclass
 class Human4DConfig(FullConfig):
@@ -176,6 +253,9 @@ cs.store(name="config", node=Human4DConfig)
 @hydra.main(version_base="1.2", config_name="config")
 def main(cfg: DictConfig) -> Optional[float]:
     """Main function for running the PHALP tracker."""
+
+    cfg.device = RUNTIME_DEVICE.type
+    log.info(f"Using runtime device: {cfg.device}")
 
     phalp_tracker = HMR2_4dhuman(cfg)
 
