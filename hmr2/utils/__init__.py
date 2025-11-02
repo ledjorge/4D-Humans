@@ -16,10 +16,10 @@ def recursive_to(x: Any, target: torch.device):
         Batch of data where all tensors are transfered to the target device.
     """
     if isinstance(x, dict):
-        return {k: recursive_to(v, target) for k, v in x.items()}
+        return {k: recursive_to(v.float() if torch.is_tensor(v) else v, target) for k, v in x.items()}
     elif isinstance(x, torch.Tensor):
-        return x.to(target)
+        return x.float().to(target)
     elif isinstance(x, list):
-        return [recursive_to(i, target) for i in x]
+        return [recursive_to(i.float() if torch.is_tensor(i) else i, target) for i in x]
     else:
         return x
