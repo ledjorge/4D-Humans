@@ -132,7 +132,12 @@ def _setup_visualizer_conditional(self):
         log.info("Skipping visualizer setup because rendering is disabled.")
         self.visualizer = None
         return
-    _orig_setup_visualizer(self)
+    try:
+        _orig_setup_visualizer(self)
+    except Exception as exc:  # pragma: no cover - best effort fallback for headless macOS
+        log.warning("Visualizer setup failed (%s). Disabling rendering and continuing.", exc)
+        self.visualizer = None
+        self.cfg.render.enable = False
 
 PHALP.setup_visualizer = _setup_visualizer_conditional
 
@@ -300,8 +305,8 @@ class HMR2_4dhuman(PHALP):
         )
     
     def get_uv_distance(self, t_uv, d_uv):
-        t_uv_tensor = torch.from_numpy(t_uv).to(RUNTIME_DEVICE).float()
-        d_uv_tensor = torch.from_numpy(d_uv).to(RUNTIME_DEVICE).float()
+        t_uv_tensor = torch.from_numpy(t_uv).float().to(RUNTIME_DEVICE)
+        d_uv_tensor = torch.from_numpy(d_uv).float().to(RUNTIME_DEVICE)
         d_mask = d_uv_tensor[3:, :, :] > 0.5
         t_mask = t_uv_tensor[3:, :, :] > 0.5
 
